@@ -139,20 +139,37 @@ def build_plan(files, start, consecutive):
 
 def validate_plan(moves):
     """
-    执行前静默自检: 逐条确认目标位当前不存在(绝不覆盖)。
+    执行前静默自检: 以磁盘真实状态为初态, 按计划顺序"模拟"每一步改名,
+    逐步确认目标位不存在(绝不覆盖)。
+
+    必须按顺序模拟而不能逐条直接查磁盘: --consecutive 计划是"先腾位、后落位"
+    两阶段的, 落位阶段的某些目标位此刻仍被占, 要等前面的腾位动作执行后才会空。
     有隐患则抛出 RenameError, 让 main 中止——在触碰任何文件之前就停下来。
     """
+    state = {}      # 目录 -> 该目录当前(模拟状态下)的文件名集合
     for src, dst in moves:
+        dsrc, sname = os.path.split(src)
+        ddst, dname = os.path.split(dst)
+        for d in (dsrc, ddst):
+            if d not in state:
+                try:
+                    state[d] = set(os.listdir(d))
+                except FileNotFoundError:
+                    state[d] = set()
+
         if os.path.abspath(src) == os.path.abspath(dst):
             continue                                       # 自身改名, 安全
-        if os.path.exists(dst):
+        if sname not in state[dsrc]:
+            raise RenameError(
+                f"[预检拦截] 计划执行到该步时源文件已不在, 已中止:\n    源文件: {src}"
+            )
+        if dname in state[ddst]:
             raise RenameError(
                 f"[预检拦截] 目标位已存在, 拒绝覆盖:\n    原文件: {src}\n    目标位: {dst}"
             )
-    # 目标位两两唯一性
-    dsts = [dst for _, dst in moves]
-    if len(dsts) != len(set(dsts)):
-        raise RenameError("[预检拦截] 计划中发现重复的目标位, 已中止。")
+        # 模拟这一步改名: 从源目录移除, 加入目标目录
+        state[dsrc].discard(sname)
+        state[ddst].add(dname)
 
 
 def safe_apply(moves, journal):
